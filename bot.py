@@ -1,22 +1,19 @@
 import os
-import discord
-from discord.ext import commands
 from datetime import datetime
 from flask import Flask, request, jsonify
 import requests
-import threading
 
 app = Flask(__name__)
 
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN')
-LOG_CHANNEL_ID = int(os.environ.get('LOG_CHANNEL_ID', '1504563977512943777'))
-VERIFY_CHANNEL_ID = int('1504972197272223844')
-GUILD_ID = int('1504158988642685089')
+LOG_CHANNEL_ID = os.environ.get('LOG_CHANNEL_ID', '1504563977512943777')
+VERIFY_CHANNEL_ID = '1504972197272223844'
+GUILD_ID = '1504158988642685089'
 
 ROLE_IDS = {
-    'prata': int(os.environ.get('ROLE_PRATA', '1504562168866013295')),
-    'ouro': int(os.environ.get('ROLE_OURO', '1504562353503600771')),
-    'diamante': int(os.environ.get('ROLE_DIAMANTE', '1504561945590628352')),
+    'prata': os.environ.get('ROLE_PRATA', '1504562168866013295'),
+    'ouro': os.environ.get('ROLE_OURO', '1504562353503600771'),
+    'diamante': os.environ.get('ROLE_DIAMANTE', '1504561945590628352'),
 }
 
 PLAN_NAMES = {
@@ -37,48 +34,24 @@ PLAN_EMOJI = {
     'diamante': '💎',
 }
 
+HEADERS = {
+    'Authorization': f'Bot {DISCORD_TOKEN}',
+    'Content-Type': 'application/json'
+}
+
 assinantes = {}
 
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-bot = commands.Bot(command_prefix='!', intents=intents)
+def enviar_mensagem(channel_id, conteudo):
+    url = f'https://discord.com/api/v10/channels/{channel_id}/messages'
+    payload = {'content': conteudo}
+    requests.post(url, json=payload, headers=HEADERS)
 
-@bot.event
-async def on_ready():
-    print(f'Bot {bot.user} online!')
-
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return
-    if message.channel.id != VERIFY_CHANNEL_ID:
-        return
-    if not message.content.startswith('!verificar '):
-        return
-
-    email = message.content.replace('!verificar ', '').strip().lower()
-
-    if email in assinantes:
-        info = assinantes[email]
-        plano = info['plano']
-        guild = bot.get_guild(GUILD_ID)
-        role = guild.get_role(ROLE_IDS[plano])
-        member = message.author
-        await member.add_roles(role)
-        await message.channel.send(
-            f"✅ <@{member.id}> Acesso verificado! Cargo **{plano.upper()}** atribuído com sucesso. Bem-vindo ao QG do Plugin! {PLAN_EMOJI[plano]}"
-        )
-    else:
-        await message.channel.send(
-            f"❌ <@{message.author.id}> E-mail não encontrado. Verifique se usou o mesmo e-mail da sua assinatura na Kiwify."
-        )
+def atribuir_cargo(user_id, plano):
+    role_id = ROLE_IDS[plano]
+    url = f'https://discord.com/api/v10/guilds/{GUILD_ID}/members/{user_id}/roles/{role_id}'
+    requests.put(url, headers=HEADERS)
 
 def enviar_embed_log(nome, email, data_compra, plano, tipo):
-    headers = {
-        'Authorization': f'Bot {DISCORD_TOKEN}',
-        'Content-Type': 'application/json'
-    }
     url = f'https://discord.com/api/v10/channels/{LOG_CHANNEL_ID}/messages'
 
     if tipo == 'entrada':
@@ -112,7 +85,7 @@ def enviar_embed_log(nome, email, data_compra, plano, tipo):
             "timestamp": datetime.utcnow().isoformat()
         }
 
-    requests.post(url, json={"embeds": [embed]}, headers=headers)
+    requests.post(url, json={"embeds": [embed]}, headers=HEADERS)
 
 @app.route('/')
 def home():
@@ -153,12 +126,31 @@ def webhook():
 
     return jsonify({'status': 'ok'}), 200
 
-def run_flask():
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+@app.route('/verificar', methods=['POST'])
+def verificar():
+    data = request.json
+    if not data:
+        return jsonify({'error': 'Sem dados'}), 400
+
+    email = data.get('email', '').lower()
+    user_id = data.get('user_id', '')
+
+    if email in assinantes:
+        info = assinantes[email]
+        plano = info['plano']
+        atribuir_cargo(user_id, plano)
+        enviar_mensagem(
+            VERIFY_CHANNEL_ID,
+            f"✅ <@{user_id}> Acesso verificado! Cargo **{plano.upper()}** atribuído com sucesso. Bem-vindo ao QG do Plugin! {PLAN_EMOJI[plano]}"
+        )
+        return jsonify({'status': 'ok', 'plano': plano}), 200
+    else:
+        enviar_mensagem(
+            VERIFY_CHANNEL_ID,
+            f"❌ <@{user_id}> E-mail não encontrado. Verifique se usou o mesmo e-mail da sua assinatura na Kiwify."
+        )
+        return jsonify({'status': 'not_found'}), 404
 
 if __name__ == '__main__':
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
-    bot.run(DISCORD_TOKEN)
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
