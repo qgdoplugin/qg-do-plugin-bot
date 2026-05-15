@@ -2,12 +2,12 @@ import os
 from datetime import datetime
 from flask import Flask, request, jsonify
 import requests
-import json
 
 app = Flask(__name__)
 
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN')
 LOG_CHANNEL_ID = os.environ.get('LOG_CHANNEL_ID', '1504563977512943777')
+GUILD_ID = '1504158988642685089'
 
 ROLE_IDS = {
     'prata': os.environ.get('ROLE_PRATA', '1504562168866013295'),
@@ -38,35 +38,56 @@ HEADERS = {
     'Content-Type': 'application/json'
 }
 
-def enviar_embed(nome, email, data_compra, plano, tipo):
+def buscar_membro_por_email(email):
+    url = f'https://discord.com/api/v10/guilds/{GUILD_ID}/members/search?query={email}&limit=1'
+    response = requests.get(url, headers=HEADERS)
+    if response.status_code == 200:
+        members = response.json()
+        if members:
+            return members[0]['user']['id']
+    return None
+
+def atribuir_cargo(user_id, plano):
+    role_id = ROLE_IDS[plano]
+    url = f'https://discord.com/api/v10/guilds/{GUILD_ID}/members/{user_id}/roles/{role_id}'
+    requests.put(url, headers=HEADERS)
+
+def remover_cargo(user_id, plano):
+    role_id = ROLE_IDS[plano]
+    url = f'https://discord.com/api/v10/guilds/{GUILD_ID}/members/{user_id}/roles/{role_id}'
+    requests.delete(url, headers=HEADERS)
+
+def enviar_embed(nome, email, data_compra, plano, tipo, cargo_atribuido=False):
     url = f'https://discord.com/api/v10/channels/{LOG_CHANNEL_ID}/messages'
 
     if tipo == 'entrada':
+        status_cargo = '✅ Cargo atribuído automaticamente' if cargo_atribuido else '⚠️ Cargo não atribuído — usuário não encontrado no servidor'
         embed = {
             "title": f"{PLAN_EMOJI[plano]} NOVO MEMBRO {plano.upper()}",
-            "description": f"Um novo assinante acaba de entrar no **QG do Plugin**.",
+            "description": "Um novo assinante acaba de entrar no **QG do Plugin**.",
             "color": PLAN_COLORS[plano],
             "fields": [
                 {"name": "👤 Usuário", "value": nome, "inline": True},
                 {"name": "📧 E-mail", "value": email, "inline": True},
                 {"name": "📦 Plano", "value": PLAN_NAMES[plano], "inline": True},
                 {"name": "📅 Data de entrada", "value": data_compra, "inline": True},
-                {"name": "✅ Status", "value": "Acesso liberado", "inline": True},
+                {"name": "🎭 Cargo", "value": status_cargo, "inline": False},
             ],
             "footer": {"text": "QG do Plugin • Acesso liberado via Kiwify"},
             "timestamp": datetime.utcnow().isoformat()
         }
     else:
+        status_cargo = '✅ Cargo removido automaticamente' if cargo_atribuido else '⚠️ Cargo não removido — usuário não encontrado no servidor'
         embed = {
             "title": f"❌ MEMBRO REMOVIDO {plano.upper()}",
-            "description": f"Um assinante cancelou ou expirou no **QG do Plugin**.",
+            "description": "Um assinante cancelou ou expirou no **QG do Plugin**.",
             "color": 0xFF0000,
             "fields": [
                 {"name": "👤 Usuário", "value": nome, "inline": True},
                 {"name": "📧 E-mail", "value": email, "inline": True},
                 {"name": "📦 Plano cancelado", "value": PLAN_NAMES[plano], "inline": True},
                 {"name": "📅 Data de saída", "value": data_compra, "inline": True},
-                {"name": "🚫 Status", "value": "Acesso removido", "inline": True},
+                {"name": "🎭 Cargo", "value": status_cargo, "inline": False},
             ],
             "footer": {"text": "QG do Plugin • Acesso removido via Kiwify"},
             "timestamp": datetime.utcnow().isoformat()
@@ -103,11 +124,20 @@ def webhook():
     if not plano:
         return jsonify({'error': 'Plano nao identificado'}), 400
 
+    user_id = buscar_membro_por_email(email)
+    cargo_atribuido = False
+
     if event == 'order.approved':
-        enviar_embed(nome, email, data_compra, plano, 'entrada')
+        if user_id:
+            atribuir_cargo(user_id, plano)
+            cargo_atribuido = True
+        enviar_embed(nome, email, data_compra, plano, 'entrada', cargo_atribuido)
 
     elif event in ['subscription.canceled', 'subscription.expired']:
-        enviar_embed(nome, email, data_compra, plano, 'saida')
+        if user_id:
+            remover_cargo(user_id, plano)
+            cargo_atribuido = True
+        enviar_embed(nome, email, data_compra, plano, 'saida', cargo_atribuido)
 
     return jsonify({'status': 'ok'}), 200
 
