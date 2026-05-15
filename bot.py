@@ -2,6 +2,7 @@ import os
 from datetime import datetime
 from flask import Flask, request, jsonify
 import requests
+import json
 
 app = Flask(__name__)
 
@@ -20,14 +21,58 @@ PLAN_NAMES = {
     'diamante': 'VIP Diamante — R$49,99/mes',
 }
 
+PLAN_COLORS = {
+    'prata': 0xC0C0C0,
+    'ouro': 0xFFD700,
+    'diamante': 0x00BFFF,
+}
+
+PLAN_EMOJI = {
+    'prata': '🩶',
+    'ouro': '🥇',
+    'diamante': '💎',
+}
+
 HEADERS = {
     'Authorization': f'Bot {DISCORD_TOKEN}',
     'Content-Type': 'application/json'
 }
 
-def enviar_mensagem(mensagem):
+def enviar_embed(nome, email, data_compra, plano, tipo):
     url = f'https://discord.com/api/v10/channels/{LOG_CHANNEL_ID}/messages'
-    payload = {'content': mensagem}
+
+    if tipo == 'entrada':
+        embed = {
+            "title": f"{PLAN_EMOJI[plano]} NOVO MEMBRO {plano.upper()}",
+            "description": f"Um novo assinante acaba de entrar no **QG do Plugin**.",
+            "color": PLAN_COLORS[plano],
+            "fields": [
+                {"name": "👤 Usuário", "value": nome, "inline": True},
+                {"name": "📧 E-mail", "value": email, "inline": True},
+                {"name": "📦 Plano", "value": PLAN_NAMES[plano], "inline": True},
+                {"name": "📅 Data de entrada", "value": data_compra, "inline": True},
+                {"name": "✅ Status", "value": "Acesso liberado", "inline": True},
+            ],
+            "footer": {"text": "QG do Plugin • Acesso liberado via Kiwify"},
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    else:
+        embed = {
+            "title": f"❌ MEMBRO REMOVIDO {plano.upper()}",
+            "description": f"Um assinante cancelou ou expirou no **QG do Plugin**.",
+            "color": 0xFF0000,
+            "fields": [
+                {"name": "👤 Usuário", "value": nome, "inline": True},
+                {"name": "📧 E-mail", "value": email, "inline": True},
+                {"name": "📦 Plano cancelado", "value": PLAN_NAMES[plano], "inline": True},
+                {"name": "📅 Data de saída", "value": data_compra, "inline": True},
+                {"name": "🚫 Status", "value": "Acesso removido", "inline": True},
+            ],
+            "footer": {"text": "QG do Plugin • Acesso removido via Kiwify"},
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    payload = {"embeds": [embed]}
     requests.post(url, json=payload, headers=HEADERS)
 
 @app.route('/')
@@ -59,26 +104,10 @@ def webhook():
         return jsonify({'error': 'Plano nao identificado'}), 400
 
     if event == 'order.approved':
-        mensagem = f"""NOVO MEMBRO {plano.upper()}
-
-Usuario: {nome}
-E-mail: {email}
-Data de entrada: {data_compra}
-Plano: {PLAN_NAMES[plano]}
-
-Acesso liberado automaticamente via Kiwify."""
-        enviar_mensagem(mensagem)
+        enviar_embed(nome, email, data_compra, plano, 'entrada')
 
     elif event in ['subscription.canceled', 'subscription.expired']:
-        mensagem = f"""MEMBRO REMOVIDO {plano.upper()}
-
-Usuario: {nome}
-E-mail: {email}
-Data de saida: {data_compra}
-Plano cancelado: {PLAN_NAMES[plano]}
-
-Acesso removido automaticamente via Kiwify."""
-        enviar_mensagem(mensagem)
+        enviar_embed(nome, email, data_compra, plano, 'saida')
 
     return jsonify({'status': 'ok'}), 200
 
