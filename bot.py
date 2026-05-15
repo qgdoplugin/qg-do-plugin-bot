@@ -7,6 +7,7 @@ app = Flask(__name__)
 
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN')
 LOG_CHANNEL_ID = os.environ.get('LOG_CHANNEL_ID', '1504563977512943777')
+VERIFY_CHANNEL_ID = '1504972197272223844'
 GUILD_ID = '1504158988642685089'
 
 ROLE_IDS = {
@@ -38,14 +39,13 @@ HEADERS = {
     'Content-Type': 'application/json'
 }
 
-def buscar_membro_por_email(email):
-    url = f'https://discord.com/api/v10/guilds/{GUILD_ID}/members/search?query={email}&limit=1'
-    response = requests.get(url, headers=HEADERS)
-    if response.status_code == 200:
-        members = response.json()
-        if members:
-            return members[0]['user']['id']
-    return None
+# Banco de dados em memória: email -> {plano, nome}
+assinantes = {}
+
+def enviar_mensagem(channel_id, conteudo):
+    url = f'https://discord.com/api/v10/channels/{channel_id}/messages'
+    payload = {'content': conteudo}
+    requests.post(url, json=payload, headers=HEADERS)
 
 def atribuir_cargo(user_id, plano):
     role_id = ROLE_IDS[plano]
@@ -57,11 +57,10 @@ def remover_cargo(user_id, plano):
     url = f'https://discord.com/api/v10/guilds/{GUILD_ID}/members/{user_id}/roles/{role_id}'
     requests.delete(url, headers=HEADERS)
 
-def enviar_embed(nome, email, data_compra, plano, tipo, cargo_atribuido=False):
+def enviar_embed_log(nome, email, data_compra, plano, tipo):
     url = f'https://discord.com/api/v10/channels/{LOG_CHANNEL_ID}/messages'
 
     if tipo == 'entrada':
-        status_cargo = '✅ Cargo atribuído automaticamente' if cargo_atribuido else '⚠️ Cargo não atribuído — usuário não encontrado no servidor'
         embed = {
             "title": f"{PLAN_EMOJI[plano]} NOVO MEMBRO {plano.upper()}",
             "description": "Um novo assinante acaba de entrar no **QG do Plugin**.",
@@ -71,13 +70,12 @@ def enviar_embed(nome, email, data_compra, plano, tipo, cargo_atribuido=False):
                 {"name": "📧 E-mail", "value": email, "inline": True},
                 {"name": "📦 Plano", "value": PLAN_NAMES[plano], "inline": True},
                 {"name": "📅 Data de entrada", "value": data_compra, "inline": True},
-                {"name": "🎭 Cargo", "value": status_cargo, "inline": False},
+                {"name": "✅ Status", "value": "Aguardando verificação no Discord", "inline": False},
             ],
-            "footer": {"text": "QG do Plugin • Acesso liberado via Kiwify"},
+            "footer": {"text": "QG do Plugin • Kiwify"},
             "timestamp": datetime.utcnow().isoformat()
         }
     else:
-        status_cargo = '✅ Cargo removido automaticamente' if cargo_atribuido else '⚠️ Cargo não removido — usuário não encontrado no servidor'
         embed = {
             "title": f"❌ MEMBRO REMOVIDO {plano.upper()}",
             "description": "Um assinante cancelou ou expirou no **QG do Plugin**.",
@@ -87,9 +85,9 @@ def enviar_embed(nome, email, data_compra, plano, tipo, cargo_atribuido=False):
                 {"name": "📧 E-mail", "value": email, "inline": True},
                 {"name": "📦 Plano cancelado", "value": PLAN_NAMES[plano], "inline": True},
                 {"name": "📅 Data de saída", "value": data_compra, "inline": True},
-                {"name": "🎭 Cargo", "value": status_cargo, "inline": False},
+                {"name": "🚫 Status", "value": "Acesso removido", "inline": False},
             ],
-            "footer": {"text": "QG do Plugin • Acesso removido via Kiwify"},
+            "footer": {"text": "QG do Plugin • Kiwify"},
             "timestamp": datetime.utcnow().isoformat()
         }
 
@@ -111,7 +109,7 @@ def webhook():
     product = data.get('product', {})
 
     nome = customer.get('name', 'Desconhecido')
-    email = customer.get('email', 'Desconhecido')
+    email = customer.get('email', 'Desconhecido').lower()
     data_compra = datetime.now().strftime('%d/%m/%Y %H:%M')
 
     product_name = product.get('name', '').lower()
@@ -124,20 +122,57 @@ def webhook():
     if not plano:
         return jsonify({'error': 'Plano nao identificado'}), 400
 
-    user_id = buscar_membro_por_email(email)
-    cargo_atribuido = False
-
     if event == 'order.approved':
-        if user_id:
-            atribuir_cargo(user_id, plano)
-            cargo_atribuido = True
-        enviar_embed(nome, email, data_compra, plano, 'entrada', cargo_atribuido)
+        assinantes[email] = {'plano': plano, 'nome': nome}
+        enviar_embed_log(nome, email, data_compra, plano, 'entrada')
 
     elif event in ['subscription.canceled', 'subscription.expired']:
-        if user_id:
-            remover_cargo(user_id, plano)
-            cargo_atribuido = True
-        enviar_embed(nome, email, data_compra, plano, 'saida', cargo_atribuido)
+        if email in assinantes:
+            del assinantes[email]
+        enviar_embed_log(nome, email, data_compra, plano, 'saida')
+
+    return jsonify({'status': 'ok'}), 200
+
+@app.route('/discord/interactions', methods=['POST'])
+def interactions():
+    data = request.json
+    if not data:
+        return jsonify({'error': 'Sem dados'}), 400
+
+    return jsonify({'type': 1})
+
+@app.route('/message', methods=['POST'])
+def message():
+    data = request.json
+    if not data:
+        return jsonify({'error': 'Sem dados'}), 400
+
+    channel_id = data.get('channel_id')
+    content = data.get('content', '')
+    user_id = data.get('user_id')
+    username = data.get('username', '')
+
+    if channel_id != VERIFY_CHANNEL_ID:
+        return jsonify({'status': 'ignored'}), 200
+
+    if not content.startswith('!verificar '):
+        return jsonify({'status': 'ignored'}), 200
+
+    email = content.replace('!verificar ', '').strip().lower()
+
+    if email in assinantes:
+        info = assinantes[email]
+        plano = info['plano']
+        atribuir_cargo(user_id, plano)
+        enviar_mensagem(
+            VERIFY_CHANNEL_ID,
+            f"✅ <@{user_id}> Acesso verificado! Cargo **{plano.upper()}** atribuído com sucesso. Bem-vindo ao QG do Plugin! {PLAN_EMOJI[plano]}"
+        )
+    else:
+        enviar_mensagem(
+            VERIFY_CHANNEL_ID,
+            f"❌ <@{user_id}> E-mail não encontrado. Verifique se usou o mesmo e-mail da sua assinatura na Kiwify."
+        )
 
     return jsonify({'status': 'ok'}), 200
 
