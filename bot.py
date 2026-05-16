@@ -1,7 +1,10 @@
 import os
+import discord
+from discord.ext import commands
 from datetime import datetime
 from flask import Flask, request, jsonify
 import requests
+import threading
 
 app = Flask(__name__)
 
@@ -41,19 +44,74 @@ HEADERS = {
 
 assinantes = {}
 
-def enviar_mensagem(channel_id, conteudo):
-    url = f'https://discord.com/api/v10/channels/{channel_id}/messages'
-    payload = {'content': conteudo}
-    requests.post(url, json=payload, headers=HEADERS)
+# ── Discord bot (commands) ──────────────────────────────────────────
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix='!', intents=intents)
 
-def atribuir_cargo(user_id, plano):
-    role_id = ROLE_IDS[plano]
-    url = f'https://discord.com/api/v10/guilds/{GUILD_ID}/members/{user_id}/roles/{role_id}'
-    requests.put(url, headers=HEADERS)
+@bot.event
+async def on_ready():
+    print(f'Bot conectado como {bot.user}')
 
+@bot.command(name='verificar')
+async def verificar_cmd(ctx, email: str = None):
+    # Só responde no canal correto
+    if str(ctx.channel.id) != VERIFY_CHANNEL_ID:
+        return
+
+    # Apaga a mensagem do usuário para proteger o e-mail
+    try:
+        await ctx.message.delete()
+    except:
+        pass
+
+    if not email:
+        await ctx.send(f'❌ <@{ctx.author.id}> Use: `!verificar seuemail@email.com`', delete_after=10)
+        return
+
+    email = email.lower()
+    user_id = str(ctx.author.id)
+
+    if email in assinantes:
+        info = assinantes[email]
+        plano = info['plano']
+        role_id = ROLE_IDS[plano]
+
+        guild = bot.get_guild(int(GUILD_ID))
+        member = guild.get_member(int(user_id))
+        role = guild.get_role(int(role_id))
+
+        if member and role:
+            await member.add_roles(role)
+
+        await ctx.send(
+            f'✅ <@{user_id}> Acesso verificado! Cargo **{plano.upper()}** atribuído. Bem-vindo ao QG do Plugin! {PLAN_EMOJI[plano]}',
+            delete_after=15
+        )
+
+        # Log no canal de admins
+        url = f'https://discord.com/api/v10/channels/{LOG_CHANNEL_ID}/messages'
+        embed = {
+            "title": f"✅ VERIFICAÇÃO CONCLUÍDA",
+            "color": PLAN_COLORS[plano],
+            "fields": [
+                {"name": "👤 Usuário", "value": f'<@{user_id}>', "inline": True},
+                {"name": "📦 Plano", "value": PLAN_NAMES[plano], "inline": True},
+                {"name": "📅 Data", "value": datetime.now().strftime('%d/%m/%Y %H:%M'), "inline": True},
+            ],
+            "footer": {"text": "QG do Plugin • Verificação"},
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        requests.post(url, json={"embeds": [embed]}, headers=HEADERS)
+    else:
+        await ctx.send(
+            f'❌ <@{user_id}> E-mail não encontrado. Verifique se usou o mesmo e-mail da assinatura na Kiwify.',
+            delete_after=15
+        )
+
+# ── Flask (webhook Kiwify) ──────────────────────────────────────────
 def enviar_embed_log(nome, email, data_compra, plano, tipo):
     url = f'https://discord.com/api/v10/channels/{LOG_CHANNEL_ID}/messages'
-
     if tipo == 'entrada':
         embed = {
             "title": f"{PLAN_EMOJI[plano]} NOVO MEMBRO {plano.upper()}",
@@ -84,7 +142,6 @@ def enviar_embed_log(nome, email, data_compra, plano, tipo):
             "footer": {"text": "QG do Plugin • Kiwify"},
             "timestamp": datetime.utcnow().isoformat()
         }
-
     requests.post(url, json={"embeds": [embed]}, headers=HEADERS)
 
 @app.route('/')
@@ -118,7 +175,6 @@ def webhook():
     if event == 'order.approved':
         assinantes[email] = {'plano': plano, 'nome': nome}
         enviar_embed_log(nome, email, data_compra, plano, 'entrada')
-
     elif event in ['subscription.canceled', 'subscription.expired']:
         if email in assinantes:
             del assinantes[email]
@@ -126,31 +182,13 @@ def webhook():
 
     return jsonify({'status': 'ok'}), 200
 
-@app.route('/verificar', methods=['POST'])
-def verificar():
-    data = request.json
-    if not data:
-        return jsonify({'error': 'Sem dados'}), 400
-
-    email = data.get('email', '').lower()
-    user_id = data.get('user_id', '')
-
-    if email in assinantes:
-        info = assinantes[email]
-        plano = info['plano']
-        atribuir_cargo(user_id, plano)
-        enviar_mensagem(
-            VERIFY_CHANNEL_ID,
-            f"✅ <@{user_id}> Acesso verificado! Cargo **{plano.upper()}** atribuído com sucesso. Bem-vindo ao QG do Plugin! {PLAN_EMOJI[plano]}"
-        )
-        return jsonify({'status': 'ok', 'plano': plano}), 200
-    else:
-        enviar_mensagem(
-            VERIFY_CHANNEL_ID,
-            f"❌ <@{user_id}> E-mail não encontrado. Verifique se usou o mesmo e-mail da sua assinatura na Kiwify."
-        )
-        return jsonify({'status': 'not_found'}), 404
-
-if __name__ == '__main__':
+# ── Inicialização ───────────────────────────────────────────────────
+def run_flask():
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
+
+if __name__ == '__main__':
+    t = threading.Thread(target=run_flask)
+    t.daemon = True
+    t.start()
+    bot.run(DISCORD_TOKEN)
