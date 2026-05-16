@@ -171,6 +171,10 @@ async def verificar_cmd(ctx, email: str = None):
 
         if member and role:
             await member.add_roles(role)
+            assinantes_col.update_one(
+            {'email': email},
+            {'$set': {'verificado': True}}
+        )
 
         # Salva o discord_id junto ao assinante
         assinantes_col.update_one(
