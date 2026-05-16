@@ -183,12 +183,19 @@ def webhook():
     return jsonify({'status': 'ok'}), 200
 
 # ── Inicialização ───────────────────────────────────────────────────
-def run_flask():
+async def run_flask():
+    import asyncio
+    from hypercorn.config import Config
+    from hypercorn.asyncio import serve
+    config = Config()
     port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+    config.bind = [f'0.0.0.0:{port}']
+    await serve(app, config)
+
+@bot.event
+async def on_ready():
+    print(f'Bot conectado como {bot.user}')
+    asyncio.ensure_future(run_flask())
 
 if __name__ == '__main__':
-    t = threading.Thread(target=run_flask)
-    t.daemon = True
-    t.start()
     bot.run(DISCORD_TOKEN)
