@@ -6,6 +6,7 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 import requests
 import threading
+from pymongo import MongoClient
 
 app = Flask(__name__)
 
@@ -13,6 +14,12 @@ DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN')
 LOG_CHANNEL_ID = os.environ.get('LOG_CHANNEL_ID', '1504563977512943777')
 VERIFY_CHANNEL_ID = '1504972197272223844'
 GUILD_ID = '1504158988642685089'
+MONGODB_URI = os.environ.get('MONGODB_URI')
+
+# Conexão com MongoDB
+mongo_client = MongoClient(MONGODB_URI)
+db = mongo_client['qgdoplugin']
+assinantes_col = db['assinantes']
 
 ROLE_IDS = {
     'prata': os.environ.get('ROLE_PRATA', '1504562168866013295'),
@@ -42,8 +49,6 @@ HEADERS = {
     'Authorization': f'Bot {DISCORD_TOKEN}',
     'Content-Type': 'application/json'
 }
-
-assinantes = {}
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -113,11 +118,15 @@ def webhook():
         return jsonify({'error': 'Plano nao identificado'}), 400
 
     if event == 'order.approved':
-        assinantes[email] = {'plano': plano, 'nome': nome}
+        assinantes_col.update_one(
+            {'email': email},
+            {'$set': {'email': email, 'plano': plano, 'nome': nome, 'data': data_compra}},
+            upsert=True
+        )
         enviar_embed_log(nome, email, data_compra, plano, 'entrada')
+
     elif event in ['subscription.canceled', 'subscription.expired']:
-        if email in assinantes:
-            del assinantes[email]
+        assinantes_col.delete_one({'email': email})
         enviar_embed_log(nome, email, data_compra, plano, 'saida')
 
     return jsonify({'status': 'ok'}), 200
@@ -143,9 +152,10 @@ async def verificar_cmd(ctx, email: str = None):
     email = email.lower()
     user_id = str(ctx.author.id)
 
-    if email in assinantes:
-        info = assinantes[email]
-        plano = info['plano']
+    assinante = assinantes_col.find_one({'email': email})
+
+    if assinante:
+        plano = assinante['plano']
         role_id = ROLE_IDS[plano]
 
         guild = bot.get_guild(int(GUILD_ID))
@@ -154,6 +164,12 @@ async def verificar_cmd(ctx, email: str = None):
 
         if member and role:
             await member.add_roles(role)
+
+        # Salva o discord_id junto ao assinante
+        assinantes_col.update_one(
+            {'email': email},
+            {'$set': {'discord_id': user_id}}
+        )
 
         await ctx.send(
             f'✅ <@{user_id}> Acesso verificado! Cargo **{plano.upper()}** atribuído. Bem-vindo ao QG do Plugin! {PLAN_EMOJI[plano]}',
@@ -175,7 +191,7 @@ async def verificar_cmd(ctx, email: str = None):
         requests.post(url, json={"embeds": [embed]}, headers=HEADERS)
     else:
         await ctx.send(
-            f'❌ <@{user_id}> E-mail não encontrado. Verifique se usou o mesmo e-mail da assinatura na Kiwify.',
+            f'❌ <@{ctx.author.id}> E-mail não encontrado. Verifique se usou o mesmo e-mail da assinatura na Kiwify.',
             delete_after=15
         )
 
