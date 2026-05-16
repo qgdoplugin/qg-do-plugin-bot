@@ -45,72 +45,11 @@ HEADERS = {
 
 assinantes = {}
 
-# ── Discord bot (commands) ──────────────────────────────────────────
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-@bot.event
-async def on_ready():
-    print(f'Bot conectado como {bot.user}')
-
-@bot.command(name='verificar')
-async def verificar_cmd(ctx, email: str = None):
-    # Só responde no canal correto
-    if str(ctx.channel.id) != VERIFY_CHANNEL_ID:
-        return
-
-    # Apaga a mensagem do usuário para proteger o e-mail
-    try:
-        await ctx.message.delete()
-    except:
-        pass
-
-    if not email:
-        await ctx.send(f'❌ <@{ctx.author.id}> Use: `!verificar seuemail@email.com`', delete_after=10)
-        return
-
-    email = email.lower()
-    user_id = str(ctx.author.id)
-
-    if email in assinantes:
-        info = assinantes[email]
-        plano = info['plano']
-        role_id = ROLE_IDS[plano]
-
-        guild = bot.get_guild(int(GUILD_ID))
-        member = guild.get_member(int(user_id))
-        role = guild.get_role(int(role_id))
-
-        if member and role:
-            await member.add_roles(role)
-
-        await ctx.send(
-            f'✅ <@{user_id}> Acesso verificado! Cargo **{plano.upper()}** atribuído. Bem-vindo ao QG do Plugin! {PLAN_EMOJI[plano]}',
-            delete_after=15
-        )
-
-        # Log no canal de admins
-        url = f'https://discord.com/api/v10/channels/{LOG_CHANNEL_ID}/messages'
-        embed = {
-            "title": f"✅ VERIFICAÇÃO CONCLUÍDA",
-            "color": PLAN_COLORS[plano],
-            "fields": [
-                {"name": "👤 Usuário", "value": f'<@{user_id}>', "inline": True},
-                {"name": "📦 Plano", "value": PLAN_NAMES[plano], "inline": True},
-                {"name": "📅 Data", "value": datetime.now().strftime('%d/%m/%Y %H:%M'), "inline": True},
-            ],
-            "footer": {"text": "QG do Plugin • Verificação"},
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        requests.post(url, json={"embeds": [embed]}, headers=HEADERS)
-    else:
-        await ctx.send(
-            f'❌ <@{user_id}> E-mail não encontrado. Verifique se usou o mesmo e-mail da assinatura na Kiwify.',
-            delete_after=15
-        )
-
-# ── Flask (webhook Kiwify) ──────────────────────────────────────────
 def enviar_embed_log(nome, email, data_compra, plano, tipo):
     url = f'https://discord.com/api/v10/channels/{LOG_CHANNEL_ID}/messages'
     if tipo == 'entrada':
@@ -183,20 +122,69 @@ def webhook():
 
     return jsonify({'status': 'ok'}), 200
 
-# ── Inicialização ───────────────────────────────────────────────────
-async def run_flask():
-    import asyncio
-    from hypercorn.config import Config
-    from hypercorn.asyncio import serve
-    config = Config()
-    port = int(os.environ.get('PORT', 10000))
-    config.bind = [f'0.0.0.0:{port}']
-    await serve(app, config)
-
 @bot.event
 async def on_ready():
     print(f'Bot conectado como {bot.user}')
-    asyncio.ensure_future(run_flask())
+
+@bot.command(name='verificar')
+async def verificar_cmd(ctx, email: str = None):
+    if str(ctx.channel.id) != VERIFY_CHANNEL_ID:
+        return
+
+    try:
+        await ctx.message.delete()
+    except:
+        pass
+
+    if not email:
+        await ctx.send(f'❌ <@{ctx.author.id}> Use: `!verificar seuemail@email.com`', delete_after=10)
+        return
+
+    email = email.lower()
+    user_id = str(ctx.author.id)
+
+    if email in assinantes:
+        info = assinantes[email]
+        plano = info['plano']
+        role_id = ROLE_IDS[plano]
+
+        guild = bot.get_guild(int(GUILD_ID))
+        member = guild.get_member(int(user_id))
+        role = guild.get_role(int(role_id))
+
+        if member and role:
+            await member.add_roles(role)
+
+        await ctx.send(
+            f'✅ <@{user_id}> Acesso verificado! Cargo **{plano.upper()}** atribuído. Bem-vindo ao QG do Plugin! {PLAN_EMOJI[plano]}',
+            delete_after=15
+        )
+
+        url = f'https://discord.com/api/v10/channels/{LOG_CHANNEL_ID}/messages'
+        embed = {
+            "title": "✅ VERIFICAÇÃO CONCLUÍDA",
+            "color": PLAN_COLORS[plano],
+            "fields": [
+                {"name": "👤 Usuário", "value": f'<@{user_id}>', "inline": True},
+                {"name": "📦 Plano", "value": PLAN_NAMES[plano], "inline": True},
+                {"name": "📅 Data", "value": datetime.now().strftime('%d/%m/%Y %H:%M'), "inline": True},
+            ],
+            "footer": {"text": "QG do Plugin • Verificação"},
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        requests.post(url, json={"embeds": [embed]}, headers=HEADERS)
+    else:
+        await ctx.send(
+            f'❌ <@{user_id}> E-mail não encontrado. Verifique se usou o mesmo e-mail da assinatura na Kiwify.',
+            delete_after=15
+        )
+
+def run_flask():
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port, use_reloader=False)
 
 if __name__ == '__main__':
+    t = threading.Thread(target=run_flask)
+    t.daemon = True
+    t.start()
     bot.run(DISCORD_TOKEN)
