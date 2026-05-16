@@ -179,12 +179,12 @@ async def verificar_cmd(ctx, email: str = None):
             delete_after=15
         )
 
-def run_flask():
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port, use_reloader=False)
+def run_bot():
+    asyncio.run(bot.start(DISCORD_TOKEN))
 
 if __name__ == '__main__':
-    t = threading.Thread(target=run_flask)
+    t = threading.Thread(target=run_bot)
     t.daemon = True
     t.start()
-    bot.run(DISCORD_TOKEN)
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port, use_reloader=False)
