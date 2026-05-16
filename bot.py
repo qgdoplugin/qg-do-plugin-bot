@@ -155,6 +155,13 @@ async def verificar_cmd(ctx, email: str = None):
     assinante = assinantes_col.find_one({'email': email})
 
     if assinante:
+        if assinante.get('verificado'):
+            await ctx.send(
+                f'⚠️ <@{ctx.author.id}> Este e-mail já foi verificado. Se tiver problemas, entre em contato com um admin.',
+                delete_after=15
+            )
+            return
+
         plano = assinante['plano']
         role_id = ROLE_IDS[plano]
 
